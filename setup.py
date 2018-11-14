@@ -39,6 +39,7 @@ requirements = to_list("""
     torchvision-nightly
     typing
     pyyaml
+    kaggle
 """)
 
 
