@@ -7,18 +7,19 @@ RUN echo "deb http://developer.download.nvidia.com/compute/machine-learning/repo
 RUN apt-get update && apt-get install \
   -y --no-install-recommends --allow-downgrades --allow-change-held-packages \
      build-essential \
-     cmake \
-     git \
-     curl \
-     vim \
      ca-certificates \
+     cmake \
+     curl \
+     git \
+     libjpeg-dev \
      libnccl2=2.2.13-1+cuda9.0 \
      libnccl-dev=2.2.13-1+cuda9.0 \
+     libpng-dev \
      python-qt4 \
-     libjpeg-dev \
-  	 zip \
   	 unzip \
-     libpng-dev && \
+     vim \
+     wget \
+  	 zip && \
    rm -rf /var/lib/apt/lists/*
 
 
@@ -32,7 +33,11 @@ RUN curl -o ~/miniconda.sh -O  https://repo.continuum.io/miniconda/Miniconda3-la
 
 WORKDIR /notebooks
 
+# clone fastai and also download/install its weights for its pretrained models
 RUN git clone https://github.com/fastai/fastai.git .
+RUN curl http://files.fast.ai/models/weights.tgz --output fastai/weights.tgz
+RUN tar xvfz fastai/weights.tgz -C fastai
+
 RUN ls && /opt/conda/bin/conda env create
 RUN /opt/conda/bin/conda clean -ya
 
@@ -61,6 +66,7 @@ WORKDIR /notebooks
 
 ENV PATH /opt/conda/envs/fastai/bin:$PATH
 
+# jupyter notebook --ip=0.0.0.0 --no-browser --allow-root
 #CMD ["jupyter", "lab", "--ip=0.0.0.0", "--no-browser", "--allow-root"]
 CMD ["jupyter", "notebook", "--ip=0.0.0.0", "--no-browser", "--allow-root"]
 # CMD ["bash"]
