@@ -4,8 +4,6 @@ ROOT=`pwd`
 
 NAME=fastai
 
-echo NAME=${NAME}
-
 sudo docker run \
   --name ${NAME} \
   -it \
