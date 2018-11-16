@@ -1,30 +1,14 @@
 from .torch_core import *
 from .basic_data import *
+from .layers import MSELossFlat
 
-
-__all__ = ['ItemList', 'CategoryList', 'MultiCategoryList', 'LabelList', 'ItemLists', 'get_files',
-           'PreProcessor', 'LabelLists']
+__all__ = ['ItemList', 'CategoryList', 'MultiCategoryList', 'MultiCategoryProcessor', 'LabelList', 'ItemLists', 'get_files',
+           'PreProcessor', 'LabelLists', 'FloatList', 'CategoryProcessor']
 
 def _decode(df):
     return np.array([[df.columns[i] for i,t in enumerate(x) if t==1] for x in df.values], dtype=np.object)
 
-def _maybe_squeeze(arr):
-    "Squeeze array dimensions but avoid squeezing a 1d-array containing a string."
-    return (arr if is1d(arr) else np.squeeze(arr))
-
-def _extract_input_labels(df:pd.DataFrame, input_cols:IntsOrStrs=0, label_cols:IntsOrStrs=1, is_fnames:bool=False,
-                      label_delim:str=None, suffix:Optional[str]=None):
-    "Get image file names in `fn_col` by adding `suffix` and labels in `label_col` from `df`."
-    assert label_delim is None or not isinstance(label_cols, Iterable) or len(label_cols) == 1
-    labels = df.iloc[:,df_names_to_idx(label_cols, df)]
-    if label_delim: labels = np.array(list(csv.reader(labels.iloc[:,0], delimiter=label_delim)))
-    else:
-        if isinstance(label_cols, Iterable) and len(label_cols) > 1: labels = _decode(labels)
-        else: labels = _maybe_squeeze(labels.values)
-    inputs = df.iloc[:,df_names_to_idx(input_cols, df)]
-    if is_fnames: inputs = inputs.iloc[:,0].str.lstrip()
-    if suffix: inputs = inputs + suffix
-    return _maybe_squeeze(inputs.values), labels
+def _maybe_squeeze(arr): return (arr if is1d(arr) else np.squeeze(arr))
 
 def get_files(c:PathOrStr, extensions:Collection[str]=None, recurse:bool=False)->FilePathList:
     "Return list of files in `c` that have a suffix in `extensions`. `recurse` determines if we search subfolders."
@@ -42,15 +26,17 @@ class ItemList():
 
     "A collection of items with `__len__` and `__getitem__` with `ndarray` indexing semantics."
     def __init__(self, items:Iterator, create_func:Callable=None, path:PathOrStr='.',
-                 label_cls:Callable=None, xtra:Any=None, processor:PreProcessor=None):
-        self.items,self.create_func,self.path = np.array(list(items), dtype=object),create_func,Path(path)
+                 label_cls:Callable=None, xtra:Any=None, processor:PreProcessor=None, **kwargs):
+        self.items,self.create_func,self.path = array(items, dtype=object),create_func,Path(path)
         self._label_cls,self.xtra,self.processor = label_cls,xtra,processor
         self._label_list,self._split = LabelList,ItemLists
         self.__post_init__()
 
     def __post_init__(self): pass
     def __len__(self)->int: return len(self.items) or 1
-    def __repr__(self)->str: return f'{self.__class__.__name__} ({len(self)} items)\n{self.items}\nPath: {self.path}'
+    def __repr__(self)->str:
+        items = [self[i] for i in range(min(5,len(self)))]
+        return f'{self.__class__.__name__} ({len(self)} items)\n{items}...\nPath: {self.path}'
     def get(self, i)->Any:
         item = self.items[i]
         return self.create_func(item) if self.create_func else item
@@ -71,9 +57,10 @@ class ItemList():
         "Called at the end of `Learn.predict`; override for optional post-processing"
         return res
 
-    def new(self, items:Iterator, create_func:Callable=None, **kwargs)->'ItemList':
+    def new(self, items:Iterator, create_func:Callable=None, processor:PreProcessor=None, **kwargs)->'ItemList':
         create_func = ifnone(create_func, self.create_func)
-        return self.__class__(items=items, create_func=create_func, path=self.path, processor=self.processor, **kwargs)
+        processor = ifnone(processor, self.processor)
+        return self.__class__(items=items, create_func=create_func, path=self.path, processor=processor, **kwargs)
 
     def __getitem__(self,idxs:int)->Any:
         if isinstance(try_int(idxs), int): return self.get(idxs)
@@ -85,30 +72,25 @@ class ItemList():
         return cls(get_files(path, extensions, recurse=recurse), path=path, **kwargs)
 
     @classmethod
-    def from_df(cls, df:DataFrame, path:PathOrStr='.', col:IntsOrStrs=0, **kwargs)->'ItemList':
-        "Create an `ItemList` in `path` from the inputs in the `col` of `df`."
-        inputs = df.iloc[:,df_names_to_idx(col, df)]
+    def from_df(cls, df:DataFrame, path:PathOrStr='.', cols:IntsOrStrs=0, **kwargs)->'ItemList':
+        "Create an `ItemList` in `path` from the inputs in the `cols` of `df`."
+        inputs = df.iloc[:,df_names_to_idx(cols, df)]
         res = cls(items=_maybe_squeeze(inputs.values), path=path, xtra = df, **kwargs)
         return res
 
     @classmethod
-    def from_csv(cls, path:PathOrStr, csv_name:str, col:IntsOrStrs=0, header:str='infer', **kwargs)->'ItemList':
-        "Create an `ItemList` in `path` from the inputs in the `col` of `path/csv_name` opened with `header`."
+    def from_csv(cls, path:PathOrStr, csv_name:str, cols:IntsOrStrs=0, header:str='infer', **kwargs)->'ItemList':
+        "Create an `ItemList` in `path` from the inputs in the `cols` of `path/csv_name` opened with `header`."
         df = pd.read_csv(path/csv_name, header=header)
-        return cls.from_df(df, path=path, col=col, **kwargs)
-
-    #Not adapted
-    @classmethod
-    def from_csvs(cls, path:PathOrStr, csv_fnames:Collection[PathOrStr], input_cols:IntsOrStrs=0, label_cols:IntsOrStrs=1,
-                  header:str='infer', **kwargs)->'LabelList':
-        "Create in `path` by reading `input_cols` and `label_cols` in csvs in `path/csv_names` opened with `header`."
-        return cls(np.concatenate([cls.from_csv(path, fname, input_cols, label_cols).items for fname in csv_fnames]), path)
+        return cls.from_df(df, path=path, cols=cols, **kwargs)
 
     def filter_by_func(self, func:Callable)->'ItemList':
+        "Only keeps elements for which `func` returns `True`."
         self.items = array([o for o in self.items if func(o)])
         return self
 
     def filter_by_folder(self, include=None, exclude=None):
+        "Only keep filenames in `include` folder or reject the ones in `exclude`."
         include,exclude = listify(include),listify(exclude)
         def _inner(o):
             n = o.relative_to(self.path).parts[0]
@@ -118,14 +100,17 @@ class ItemList():
         return self.filter_by_func(_inner)
 
     def split_by_list(self, train, valid):
+        "Split the data between `train` and `valid`."
         return self._split(self.path, train, valid)
 
     def split_by_idxs(self, train_idx, valid_idx):
+        "Split the data between `train_idx` and `valid_idx`."
         return self.split_by_list(self[train_idx], self[valid_idx])
 
     def split_by_idx(self, valid_idx:Collection[int])->'ItemLists':
         "Split the data according to the indexes in `valid_idx`."
-        train_idx = [i for i in range_of(self.items) if i not in valid_idx]
+        #train_idx = [i for i in range_of(self.items) if i not in valid_idx]
+        train_idx = np.setdiff1d(arange_of(self.items), valid_idx)
         return self.split_by_idxs(train_idx, valid_idx)
 
     def _get_by_folder(self, name):
@@ -164,30 +149,28 @@ class ItemList():
         valid_idx = np.where(self.xtra.iloc[:,df_names_to_idx(col, self.xtra)])[0]
         return self.split_by_idx(valid_idx)
 
-    def label_cls(self, labels, lc=None):
-        if lc is not None:              return lc
-        if self._label_cls is not None: return self._label_cls
-        it = try_int(index_row(labels,0))
-        if isinstance(it, (str,int)):   return CategoryList
-        if isinstance(it, Collection):  return MultiCategoryList
+    def label_cls(self, labels, label_cls:Callable=None, sep:str=None, **kwargs):
+        if label_cls is not None:               return label_cls
+        if self._label_cls is not None:         return self._label_cls
+        it = index_row(labels,0)
+        if sep is not None:                     return MultiCategoryList
+        if isinstance(it, (float, np.float32)): return FloatList
+        if isinstance(try_int(it), (str,int)):  return CategoryList
+        if isinstance(it, Collection):          return MultiCategoryList
         return self.__class__
 
-    def label_from_list(self, labels:Iterator, label_cls:Callable=None, template:Callable=None, **kwargs)->'LabelList':
-        "Label `self.items` with `labels` using `label_cls` and optionally `template`."
+    def label_from_list(self, labels:Iterator, **kwargs)->'LabelList':
+        "Label `self.items` with `labels` using `label_cls`"
         labels = array(labels, dtype=object)
-        label_cls = self.label_cls(labels, label_cls)
-        y_bld = label_cls if template is None else template.new
-        y = y_bld(labels, **kwargs)
-        if self.__class__.__name__.startswith('Text'):
-            filt = array([o is None for o in y])
-            if filt.sum()>0: self,y = self[~filt],y[~filt]
-        return self._label_list(x=self, y=y)
+        label_cls = self.label_cls(labels, **kwargs)
+        y = label_cls(labels, **kwargs)
+        res = self._label_list(x=self, y=y)
+        return res
 
-    def label_from_df(self, cols:IntsOrStrs=1, sep=None, **kwargs):
-        "Label `self.items` from the values in `cols` in `self.xtra`. If `sep` is passed, will split the labels accordingly."
+    def label_from_df(self, cols:IntsOrStrs=1, **kwargs):
+        "Label `self.items` from the values in `cols` in `self.xtra`."
         labels = _maybe_squeeze(self.xtra.iloc[:,df_names_to_idx(cols, self.xtra)])
-        label_cls = None if sep is None else MultiCategoryList
-        return self.label_from_list(labels, label_cls=label_cls, sep=sep, **kwargs)
+        return self.label_from_list(labels, **kwargs)
 
     def label_const(self, const:Any=0, **kwargs)->'LabelList':
         "Label every item with `const`."
@@ -211,34 +194,82 @@ class ItemList():
             return res.group(1)
         return self.label_from_func(_inner, **kwargs)
 
-class CategoryList(ItemList):
-    _item_cls=Category
-    def __init__(self, items:Iterator, classes:Collection=None, sep=None, **kwargs):
-        super().__init__(items, **kwargs)
-        if classes is None: classes = uniqueify(items)
+class CategoryProcessor(PreProcessor):
+    def __init__(self, classes:Collection=None): self.create_classes(classes)
+
+    def create_classes(self, classes):
         self.classes = classes
-        self.class2idx = {v:k for k,v in enumerate(self.classes)}
-        self.c = len(classes)
-        self.loss_func = F.cross_entropy
+        if classes is not None: self.c2i = {v:k for k,v in enumerate(classes)}
+
+    def generate_classes(self, items): return uniqueify(items)
+    def process_one(self,item): return self.c2i.get(item,None)
+
+    def process(self, ds):
+        if self.classes is None: self.create_classes(self.generate_classes(ds.items))
+        ds.classes = self.classes
+        ds.c2i = self.c2i
+        super().process(ds)
+
+class CategoryListBase(ItemList):
+    def __init__(self, items:Iterator, classes:Collection=None,**kwargs):
+        self.classes=classes
+        super().__init__(items, **kwargs)
+        
+    @property
+    def c(self): return len(self.classes)
 
     def new(self, items, classes=None, **kwargs):
         return super().new(items, classes=ifnone(classes, self.classes), **kwargs)
 
+class CategoryList(CategoryListBase):
+    _item_cls=Category
+    def __init__(self, items:Iterator, classes:Collection=None, processor:PreProcessor=None, **kwargs):
+        super().__init__(items, processor=processor, classes=classes, **kwargs)
+        if processor is None: self.processor = CategoryProcessor(classes=classes)
+        self.loss_func = F.cross_entropy
+
     def get(self, i):
-        o = super().get(i)
-        return self._item_cls.create(o, self.class2idx)
+        o = self.items[i]
+        return self._item_cls(o, self.classes[o])
 
     def predict(self, res):
         pred_max = res[0].argmax()
         return self.classes[pred_max],pred_max,res[0]
 
-class MultiCategoryList(CategoryList):
+class MultiCategoryProcessor(CategoryProcessor):
+    def process_one(self,item): return [self.c2i.get(o,None) for o in item]
+
+    def generate_classes(self, items):
+        classes = set()
+        for c in items: classes = classes.union(set(c))
+        return list(classes)
+
+class MultiCategoryList(CategoryListBase):
     _item_cls=MultiCategory
-    def __init__(self, items:Iterator, classes:Collection=None, sep=None, **kwargs):
-        if sep is not None: items = array(list(csv.reader(items, delimiter=sep)))
-        if classes is None: classes = uniqueify(np.concatenate(items))
-        super().__init__(items, classes=classes, **kwargs)
+    def __init__(self, items:Iterator, classes:Collection=None, processor:PreProcessor=None, sep:str=None, **kwargs):
+        if sep is not None: items = array(csv.reader(items, delimiter=sep))
+        super().__init__(items, processor=processor, classes=classes, **kwargs)
+        if processor is None: self.processor = MultiCategoryProcessor(classes=classes)
         self.loss_func = F.binary_cross_entropy_with_logits
+
+    def get(self, i):
+        o = self.items[i]
+        return self._item_cls(one_hot(o, self.c), [self.classes[p] for p in o], o)
+
+class FloatList(ItemList):
+    _item_cls=FloatItem
+    def __init__(self, items:Iterator, log:bool=False, **kwargs):
+        super().__init__(np.array(items, dtype=np.float32), **kwargs)
+        self.log = log
+        self.c = self.items.shape[1] if len(self.items.shape) > 1 else 1
+        self.loss_func = MSELossFlat()
+
+    def new(self, items,**kwargs):
+        return super().new(items, log=self.log, **kwargs)
+
+    def get(self, i):
+        o = super().get(i)
+        return self._item_cls(log(o) if self.log else o)
 
 class ItemLists():
     "A `ItemList` for each of `train` and `valid` (optional `test`)"
@@ -257,19 +288,11 @@ class ItemLists():
         def _inner(*args, **kwargs):
             self.train = ft(*args, **kwargs)
             assert isinstance(self.train, LabelList)
-            self.valid = fv(*args, template=self.train.y, **kwargs)
+            self.valid = fv(*args, **kwargs)
             self.__class__ = LabelLists
             self.process()
             return self
         return _inner
-
-    @classmethod
-    def from_csv(cls, path:PathOrStr, csv_fname:PathOrStr, input_cols:IntsOrStrs=0, label_cols:IntsOrStrs=1,
-                 valid_col:int=2, header:str='infer')->'ItemLists':
-        "Create in `path` from csv in `path/csv_name` with `header`. Inputs from `input_cols`, labels `label_cols` split by `valid_col`"
-        df = pd.read_csv(path/csv_fname, header=header)
-        val_idx = df.iloc[:,valid_col].nonzero()[0]
-        return LabelList.from_df(path, df, input_cols, label_cols).split_by_idx(val_idx)
 
     @property
     def lists(self):
@@ -278,6 +301,7 @@ class ItemLists():
         return res
 
     def label_from_lists(self, train_labels:Iterator, valid_labels:Iterator, label_cls:Callable=None, **kwargs)->'LabelList':
+        "Use the labels in `train_labels` and `valid_labels` to label the data. `label_cls` will overwrite the default."
         label_cls = self.train.label_cls(train_labels, label_cls)
         self.train = self.train._label_list(x=self.train, y=label_cls(train_labels, **kwargs))
         self.valid = self.valid._label_list(x=self.valid, y=self.train.y.new(valid_labels, **kwargs))
@@ -286,6 +310,7 @@ class ItemLists():
         return self
 
     def transform(self, tfms:Optional[Tuple[TfmList,TfmList]]=(None,None), **kwargs):
+        "Set `tfms` to be applied to the train and validation set."
         if not tfms: return self
         self.train.transform(tfms[0], **kwargs)
         self.valid.transform(tfms[1], **kwargs)
@@ -311,7 +336,7 @@ class LabelLists(ItemLists):
     def add_test(self, items:Iterator, label:Any=None):
         "Add test set containing items from `items` and an arbitrary `label`"
         # if no label passed, use label of first training item
-        if label is None: label = str(self.train[0][1])
+        if label is None: label = self.train[0][1].obj
         labels = [label for _ in range_of(items)]
         if isinstance(items, ItemList): self.test = self.valid.new(items.items, labels, xtra=items.xtra)
         else: self.test = self.valid.new(items, labels)
@@ -366,9 +391,13 @@ class LabelList(Dataset):
         self.y.process(yp)
         return self
 
+    def filter_missing_y(self):
+        filt = array([o is None for o in self.y])
+        if filt.sum()>0: self.x,self.y = self.x[~filt],self.y[~filt]
+
     @classmethod
     def from_lists(cls, path:PathOrStr, inputs, labels)->'LabelList':
-        "Create a `LabelDataset` in `path` with `inputs` and `labels`."
+        "Create a `LabelList` in `path` with `inputs` and `labels`."
         inputs,labels = np.array(inputs),np.array(labels)
         return cls(np.concatenate([inputs[:,None], labels[:,None]], 1), path)
 

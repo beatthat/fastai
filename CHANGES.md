@@ -21,7 +21,13 @@ of that change.
 
 ### New:
 
+- `FloatList` to do regression
+
 ### Changed:
+
+- Remove `TextFilesList` as you can now use `TextList` instead
+- Consistent use of `cols` / `col` in the data block API depending on if you can pass multiple columns or not
+- Collab is refactored with the data block API behind the scene
 
 ### Fixed:
 
@@ -32,6 +38,8 @@ of that change.
 ### New:
 
 ### Changed:
+
+- Big refactor of the data block API
 
 ### Fixed:
 

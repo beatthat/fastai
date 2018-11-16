@@ -4,7 +4,7 @@ from .transform import *
 from ..basic_data import *
 from ..data_block import *
 
-__all__ = ['LanguageModelLoader', 'SortSampler', 'SortishSampler', 'TextFilesList', 'TextList', 'pad_collate', 'TextDataBunch',
+__all__ = ['LanguageModelLoader', 'SortSampler', 'SortishSampler', 'TextList', 'pad_collate', 'TextDataBunch',
            'TextLMDataBunch', 'TextClasDataBunch', 'Text', 'open_text', 'TokenizeProcessor', 'NumericalizeProcessor',
            'OpenFileProcessor']
 
@@ -120,7 +120,7 @@ class TextDataBunch(DataBunch):
         "Create a `TextDataBunch` from ids, labels and a dictionary."
         src = ItemLists(path, TextList(train_ids, vocab, path=path, processor=[]),
                         TextList(valid_ids, vocab, path=path, processor=[]))
-        src = src.label_for_lm() if cls==TextLMDataBunch else src.label_from_lists(train_lbls, valid_lbls)
+        src = src.label_for_lm() if cls==TextLMDataBunch else src.label_from_lists(train_lbls, valid_lbls, classes=classes, processor=[])
         if test_ids is not None: src.add_test(TextList(test_ids, vocab, path=path))
         src.valid.x.processor = ifnone(processor, [TokenizeProcessor(), NumericalizeProcessor(vocab=vocab)])
         return src.databunch(**kwargs)
@@ -143,7 +143,7 @@ class TextDataBunch(DataBunch):
         "Create a `TextDataBunch` from tokens and labels."
         processor = _get_processor(tokenizer=None, vocab=vocab, **kwargs)[1]
         src = ItemLists(path, TextList(trn_tok, path=path, processor=processor),
-                        TextList(valid_df, path=path, processor=processor))
+                        TextList(valid_tok, path=path, processor=processor))
         src = src.label_for_lm() if cls==TextLMDataBunch else src.label_from_lists(trn_lbls, val_lbls)
         if test_tok is not None: src.add_test(TextList(tst_tok, path=path))
         return src.databunch(**kwargs)
@@ -154,10 +154,10 @@ class TextDataBunch(DataBunch):
                 label_cols:IntsOrStrs=0, label_delim:str=None, **kwargs) -> DataBunch:
         "Create a `TextDataBunch` from DataFrames."
         processor = _get_processor(tokenizer=tokenizer, vocab=vocab, **kwargs)
-        src = ItemLists(path, TextList.from_df(train_df, path, col=text_cols, processor=processor),
-                        TextList.from_df(valid_df, path, col=text_cols, processor=processor))
+        src = ItemLists(path, TextList.from_df(train_df, path, cols=text_cols, processor=processor),
+                        TextList.from_df(valid_df, path, cols=text_cols, processor=processor))
         src = src.label_for_lm() if cls==TextLMDataBunch else src.label_from_df(cols=label_cols, classes=classes, sep=label_delim)
-        if test_df is not None: src.add_test(TextList.from_df(test_df, path, col=text_cols))
+        if test_df is not None: src.add_test(TextList.from_df(test_df, path, cols=text_cols))
         return src.databunch(**kwargs)
 
     @classmethod
@@ -237,14 +237,16 @@ class TextClasDataBunch(TextDataBunch):
             dataloaders.append(DataLoader(ds, batch_size=bs, sampler=sampler, **kwargs))
         return cls(*dataloaders, path=path, collate_fn=collate_fn)
 
-def open_text(fn:PathOrStr):
-    with open(fn,'r') as f: return ''.join(f.readlines())
+def open_text(fn:PathOrStr, enc='utf-8'):
+    "Read the text in `fn`."
+    with open(fn,'r', encoding = enc) as f: return ''.join(f.readlines())
 
 class Text(ItemBase):
     def __init__(self, ids, text): self.data,self.text = ids,text
     def __str__(self):  return str(self.text)
 
     def show_batch(self, idxs:Collection[int], rows:int, ds:Dataset, max_len:int=50)->None:
+        "Show the texts in `idx` on a few `rows` from `ds`. `max_len` is the maximum number of tokens displayed."
         from IPython.display import display, HTML
         items = [['text', 'label']]
         for i in idxs[:rows]:
@@ -279,6 +281,13 @@ class TextList(ItemList):
         "A special labelling method for language models."
         self._bunch = TextLMDataBunch
         return self.label_const(0, label_cls=LMLabel)
+    
+    @classmethod
+    def from_folder(cls, path:PathOrStr='.', extensions:Collection[str]=text_extensions, processor:PreProcessor=None,
+                    vocab:Vocab=None, **kwargs)->'TextList':
+        "Get the list of files in `path` that have a text suffix. `recurse` determines if we search subfolders."
+        processor = ifnone(processor, [OpenFileProcessor(), TokenizeProcessor(), NumericalizeProcessor(vocab=vocab)])
+        return super().from_folder(path=path, extensions=extensions, processor=processor, **kwargs)
 
 def _join_texts(texts:Collection[str], mark_fields:bool=True):
     if not isinstance(texts, np.ndarray): texts = np.array(texts)
@@ -305,24 +314,12 @@ class NumericalizeProcessor(PreProcessor):
     def __init__(self, vocab:Vocab=None, max_vocab:int=60000, min_freq:int=2):
         self.vocab,self.max_vocab,self.min_freq = vocab,max_vocab,min_freq
 
-    def process_one(self,item): return LongTensor(self.vocab.numericalize(item))
+    def process_one(self,item): return np.array(self.vocab.numericalize(item), dtype=np.int64)
     def process(self, ds):
-        if self.vocab is None: 
-            self.vocab = Vocab.create(ds.items, self.max_vocab, self.min_freq)
+        if self.vocab is None: self.vocab = Vocab.create(ds.items, self.max_vocab, self.min_freq)
         ds.vocab = self.vocab
         super().process(ds)
 
 class OpenFileProcessor(PreProcessor):
     def process_one(self,item):
         return open_text(item) if isinstance(item, Path) else item
-
-class TextFilesList(TextList):
-    def __init__(self, items:Iterator, vocab:Vocab=None, processor=None, **kwargs):
-        processor = ifnone(processor, [OpenFileProcessor(), TokenizeProcessor(), NumericalizeProcessor(vocab=vocab)])
-        super().__init__(items, vocab, processor=processor, **kwargs)
-
-    @classmethod
-    def from_folder(cls, path:PathOrStr='.', extensions:Collection[str]=text_extensions, processor=None, **kwargs)->ItemList:
-        "Get the list of files in `path` that have a text suffix. `recurse` determines if we search subfolders."
-        return super().from_folder(path=path, extensions=extensions, processor=processor, **kwargs)
-

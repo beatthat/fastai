@@ -6,12 +6,15 @@ from tempfile import TemporaryDirectory
 def test_cpus(): assert num_cpus() >= 1
 
 @pytest.mark.parametrize("p, q, expected", [
+    (None, None, []),
+    ('hi', None, ['hi']),
+    ([1,2],None, [1,2]),
     (5  , 1    , [5]),
     (5  , [1,1], [5, 5]),
     ([5], 1    , [5]),
     ([5], [1,1], [5, 5]),
-    ("ab"  , "cd"        , ["a", "b"]),
-    ("ab"  , ["cd", "ef"], ["a", "b"]),
+    ("ab"  , "cd"        , ["ab", "ab"]),
+    ("ab"  , ["cd", "ef"], ["ab", "ab"]),
     (["ab"], "cd"        , ["ab", "ab"]),
     (["ab"], ["cd", "ef"], ["ab", "ab"]),
 ])
@@ -169,5 +172,6 @@ def test_df_names_to_idx():
     df = pd.DataFrame({'col1': [1,2], 'col2': [3,4], 'col3':[5,6]})
     assert df_names_to_idx(['col1','col3'], df) == [0, 2]
 
-def test_one_hot_encode():
-    assert all(one_hot_encode([0,-1], 5) == np.array([1,0,0,0,1]))
+def test_one_hot():
+    assert all(one_hot([0,-1], 5) == np.array([1,0,0,0,1]))
+

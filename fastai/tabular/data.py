@@ -11,10 +11,13 @@ __all__ = ['TabularDataBunch', 'TabularLine', 'TabularList', 'TabularProcessor',
 
 OptTabTfms = Optional[Collection[TabularProc]]
 
+def emb_sz_rule(n_cat:int)->int: return min(50, (n_cat//2)+1)
+#def emb_sz_rule(n_cat:int)->int: return min(600, round(1.6 * n_cat**0.56))
+
 def def_emb_sz(df, n, sz_dict):
     col = df[n]
     n_cat = len(col.cat.categories)+1  # extra cat for NA
-    sz = sz_dict.get(n, min(50, (n_cat//2)+1))  # rule of thumb
+    sz = sz_dict.get(n, int(emb_sz_rule(n_cat)))  # rule of thumb
     return n_cat,sz
 
 def _text2html_table(items:Collection[Collection[str]], widths:Collection[int])->str:
@@ -26,6 +29,8 @@ def _text2html_table(items:Collection[Collection[str]], widths:Collection[int])-
         html_code += "\n  </tr>\n"
     return html_code + "</table>\n"
 
+#def _fix_empty_tensor(o): = [tensor(cats) if len(cats) != 0 else tensor(0),
+
 class TabularLine(ItemBase):
     def __init__(self, cats, conts, classes, names):
         self.cats,self.conts,self.classes,self.names = cats,conts,classes,names
@@ -34,28 +39,32 @@ class TabularLine(ItemBase):
     def __str__(self):
         res = ''
         for c, n in zip(self.cats, self.names[:len(self.cats)]):
-            res += f"{n} {(self.classes[n][c-1] if c != 0 else 'nan')}\n"
+            res += f"{n} {(self.classes[n][c-1] if c != 0 else 'nan')}; "
         for c,n in zip(self.conts, self.names[len(self.cats):]):
-            res += f'{n} {c:.4f}\n'
+            res += f'{n} {c:.4f}; '
         return res
 
-    def show_batch(self, idxs:Collection[int], rows:int, ds:Dataset, figsize:Tuple[int,int]=(9,10))->None:
+    def show_batch(self, idxs:Collection[int], rows:int, ds:Dataset, **kwargs)->None:
+        "Show the data in `idxs` on a few `rows` from `ds`."
         from IPython.display import display, HTML
         x,y = ds[0]
-        items = [x.names]
+        items = [x.names + ['target']]
         for i in idxs[:rows]:
             x,y = ds[i]
             res = []
             for c, n in zip(x.cats, self.names[:len(x.cats)]):
                 res.append(str(x.classes[n][c-1]) if c != 0 else 'nan')
-            res += [f'{c:.4f}' for c in x.conts]
+            res += [f'{c:.4f}' for c in x.conts] + [str(y)]
             items.append(res)
         display(HTML(_text2html_table(items, [10] * len(items[0]))))
 
 class TabularList(ItemList):
+    _item_cls=TabularLine
     def __init__(self, items:Iterator, cat_names:OptStrList=None, cont_names:OptStrList=None,
                  processor=None, procs=None, **kwargs):
         #dataframe is in xtra, items is just a range of index
+        if cat_names is None:  cat_names = []
+        if cont_names is None: cont_names = []
         if processor is None: processor=TabularProcessor(procs)
         super().__init__(range_of(items), processor=processor, **kwargs)
         self.cat_names,self.cont_names = cat_names,cont_names
@@ -69,25 +78,30 @@ class TabularList(ItemList):
         return super().new(items=items, cat_names=self.cat_names, cont_names=self.cont_names, **kwargs)
 
     def get(self, o):
-        return TabularLine(self.codes[o], self.conts[o], self.classes, self.col_names)
+        codes = [] if self.codes is None else self.codes[o]
+        conts = [] if self.conts is None else self.conts[o]
+        return self._item_cls(codes, conts, self.classes, self.col_names)
 
-    def get_emb_szs(self, sz_dict): 
+    def get_emb_szs(self, sz_dict):
         "Return the default embedding sizes suitable for this data or takes the ones in `sz_dict`."
         return [def_emb_sz(self.xtra, n, sz_dict) for n in self.cat_names]
 
 class TabularProcessor(PreProcessor):
-    def __init__(self, procs=None):
-        self.procs = listify(procs)
+    def __init__(self, procs=None): self.procs = listify(procs)
 
     def process_one(self, item):
         df = pd.DataFrame([item,item])
         for proc in self.procs: proc(df, test=True)
-        codes = np.stack([c.cat.codes.values for n,c in df[self.cat_names].items()], 1).astype(np.int64) + 1
-        conts = np.stack([c.astype('float32').values for n,c in df[self.cont_names].items()], 1)
+        if self.cat_names is not None:
+            codes = np.stack([c.cat.codes.values for n,c in df[self.cat_names].items()], 1).astype(np.int64) + 1
+        else: codes = [[]]
+        if self.cont_names is not None:
+            conts = np.stack([c.astype('float32').values for n,c in df[self.cont_names].items()], 1)
+        else: conts = [[]]
         classes = None
         col_names = list(df[self.cat_names].columns.values) + list(df[self.cont_names].columns.values)
         return TabularLine(codes[0], conts[0], classes, col_names)
-        
+
     def process(self, ds):
         for i,proc in enumerate(self.procs):
             if isinstance(proc, TabularProc): proc(ds.xtra, test=True)
@@ -98,10 +112,17 @@ class TabularProcessor(PreProcessor):
                 ds.cat_names,ds.cont_names = proc.cat_names,proc.cont_names
                 self.procs[i] = proc
         self.cat_names,self.cont_names = ds.cat_names,ds.cont_names
-        ds.codes = np.stack([c.cat.codes.values for n,c in ds.xtra[ds.cat_names].items()], 1).astype(np.int64) + 1
-        ds.conts = np.stack([c.astype('float32').values for n,c in ds.xtra[ds.cont_names].items()], 1)
-        ds.classes = {n:c.cat.categories.values for n,c in ds.xtra[ds.cat_names].items()}
-        ds.col_names = list(ds.xtra[ds.cat_names].columns.values) + list(ds.xtra[ds.cont_names].columns.values)
+        if len(ds.cat_names) != 0:
+            ds.codes = np.stack([c.cat.codes.values for n,c in ds.xtra[ds.cat_names].items()], 1).astype(np.int64) + 1
+            ds.classes = OrderedDict({n:c.cat.categories.values
+                                      for n,c in ds.xtra[ds.cat_names].items()})
+            cat_cols = list(ds.xtra[ds.cat_names].columns.values)
+        else: ds.codes,ds.classes,cat_cols = None,None,[]
+        if len(ds.cont_names) != 0:
+            ds.conts = np.stack([c.astype('float32').values for n,c in ds.xtra[ds.cont_names].items()], 1)
+            cont_cols = list(ds.xtra[ds.cont_names].columns.values)
+        else: ds.conts,cont_cols = None,[]
+        ds.col_names = cat_cols + cont_cols
 
 class TabularDataBunch(DataBunch):
     "Create a `DataBunch` suitable for tabular data."
