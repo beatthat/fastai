@@ -113,7 +113,7 @@ setup(
     setup_requires   = setup_requirements,
     extras_require   = dev_requirements,
     tests_require    = test_requirements,
-    python_requires  = '>=3.6',
+    python_requires  = '>=3.7',
 
     test_suite = 'tests',
 
