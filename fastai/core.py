@@ -221,9 +221,23 @@ def array(a, *args, **kwargs)->np.ndarray:
 
 class Category(ItemBase):
     def __init__(self,data,obj): self.data,self.obj = data,obj
-    def __int__(self): return self.data
+    def __int__(self): return int(self.data)
     def __str__(self): return str(self.obj)
 
 class MultiCategory(ItemBase):
     def __init__(self,data,obj,raw): self.data,self.obj,self.raw = data,obj,raw
     def __str__(self): return ';'.join([str(o) for o in self.obj])
+
+class DirEntryPath(pathlib.PosixPath):
+    def __init__(self, d): self.d,self.p_ = d,None
+        
+    @property
+    def p(self):
+        if self.p_ is None: self.p_ = Path(self.d)
+        return self.p_
+    
+    def __getattr__(self,k):
+        if k.startswith('_'): raise AttributeError()
+        res = getattr(self.d, k, None)
+        if res is not None: return res
+        return getattr(self.p, k)
