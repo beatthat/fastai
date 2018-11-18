@@ -37,6 +37,7 @@ WORKDIR /notebooks
 RUN git clone https://github.com/fastai/fastai.git .
 RUN curl http://files.fast.ai/models/weights.tgz --output fastai/weights.tgz
 RUN tar xvfz fastai/weights.tgz -C fastai
+RUN ln -s /notebooks/fastai/weights /notebooks/old/fastai/weights
 
 RUN ls && /opt/conda/bin/conda env create
 RUN /opt/conda/bin/conda clean -ya
