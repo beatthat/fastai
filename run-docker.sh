@@ -4,15 +4,18 @@ ROOT=`pwd`
 
 NAME=fastai
 
-sudo docker run \
+mkdir -p docker_host
+HOST_MOUNT=`pwd`/docker_host
+
+docker run \
   --name ${NAME} \
   -it \
   --rm \
-  --runtime=nvidia -d \
+  --runtime=nvidia \
   -p 8888:8888 \
-  --mount type=bind,src=${ROOT},target=/home/fastai \
-  --workdir /home/fastai \
+  --mount type=bind,src=${HOST_MOUNT},target=/notebooks/docker_host \
+  --workdir /notebooks \
   fastai
 
 
-docker exec -it ${NAME} bash
+# docker exec -it ${NAME} bash

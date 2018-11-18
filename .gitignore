@@ -130,3 +130,8 @@ examples/.last_checked
 
 # symlinks to fastai
 examples/fastai
+
+# docker_host is a host directory mounted into docker container
+# so you can more easily keep new notebooks etc. on your host machine
+# as opposed to inside the docker container where they are, by default, not persistent
+docker_host
