@@ -1,7 +1,7 @@
 "NLP data processing; tokenizes text and creates vocab indexes"
 from ..torch_core import *
 
-__all__ = ['BaseTokenizer', 'SpacyTokenizer', 'Tokenizer', 'Vocab', 'replace_all_caps', 'fix_html', 'replace_rep', 'replace_wrep', 
+__all__ = ['BaseTokenizer', 'SpacyTokenizer', 'Tokenizer', 'Vocab', 'fix_html', 'replace_all_caps', 'replace_rep', 'replace_wrep', 
            'rm_useless_spaces', 'spec_add_spaces', 'BOS', 'FLD', 'UNK', 'PAD', 'TK_MAJ', 'TK_UP', 'TK_REP', 'TK_REP', 'TK_WREP', 
            'default_pre_rules', 'default_post_rules', 'default_spec_tok', 'deal_caps']
 
@@ -52,13 +52,6 @@ def replace_wrep(t:str) -> str:
     re_wrep = re.compile(r'(\b\w+\W+)(\1{3,})')
     return re_wrep.sub(_replace_wrep, t)
 
-def replace_all_caps(t:str) -> str:
-    "Replace words in all caps in `t`."
-    res = []
-    for s in re.findall(r'\w+|\W+', t):
-        res += ([f' {TK_UP} ',s] if (s.isupper() and (len(s)>2)) else [s])
-    return ''.join(res)
-
 def fix_html(x:str) -> str:
     "List of replacements from html strings in `x`."
     re1 = re.compile(r'  +')
@@ -68,17 +61,25 @@ def fix_html(x:str) -> str:
         ' @-@ ','-').replace('\\', ' \\ ')
     return re1.sub(' ', html.unescape(x))
 
+def replace_all_caps(x:Collection[str]) -> Collection[str]:
+    "Add `TK_UP` for words in all caps in `x`."
+    res = []
+    for t in x:
+        if t.isupper() and len(t) > 1: res.append(TK_UP)
+        res.append(t)
+    return res
+
 def deal_caps(x:Collection[str]) -> Collection[str]:
     "Replace all words in `x` by their lower version and add `TK_MAJ`."
     res = []
     for t in x:
-        if (t[0].isupper() and t[1:].islower()): res.append(TK_MAJ)
+        if t[0].isupper() and t[1:].islower(): res.append(TK_MAJ)
         res.append(t.lower())
     return res
 
-default_pre_rules = [fix_html, replace_rep, replace_wrep, replace_all_caps, spec_add_spaces, rm_useless_spaces]
+default_pre_rules = [fix_html, replace_rep, replace_wrep, spec_add_spaces, rm_useless_spaces]
 default_spec_tok = [BOS, FLD, UNK, PAD]
-default_post_rules = [deal_caps]
+default_post_rules = [replace_all_caps, deal_caps]
 
 class Tokenizer():
     "Put together rules, a tokenizer function and a language to tokenize text with multiprocessing."
@@ -129,6 +130,15 @@ class Vocab():
     def textify(self, nums:Collection[int], sep=' ') -> List[str]:
         "Convert a list of `nums` to their tokens."
         return sep.join([self.itos[i] for i in nums])
+        
+    def save(self, path:PathOrStr, dict_name='itos.pkl'):
+        "Save the vocab in `path/dict_name."
+        pickle.dump(self.itos, open(Path(path)/dict_name, 'wb'))
+        
+    @classmethod
+    def load(cls, path:PathOrStr, dict_name='itos.pkl'):
+        "Load the vocab from `path/dict_name."
+        return cls(pickle.load(open(Path(path)/dict_name, 'rb')))
 
     @classmethod
     def create(cls, tokens:Tokens, max_vocab:int, min_freq:int) -> 'Vocab':

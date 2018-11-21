@@ -20,7 +20,7 @@ def test_from_folder(path):
 
 def test_from_name_re(path):
     fnames = get_files(path/'train', recurse=True)
-    pat = r'\/([^/]+)\/\d+.png$'
+    pat = r'/([^/]+)\/\d+.png$'
     data = ImageDataBunch.from_name_re(path, fnames, pat, ds_tfms=(rand_pad(2, 28), []))
     mnist_tiny_sanity_test(data)
 
@@ -49,7 +49,6 @@ def test_download_images():
     finally:
         shutil.rmtree(tmp_path)
 
-@pytest.mark.skip("Jeremy needs to fix me")
 def test_verify_images(path):
     tmp_path = path/'tmp'
     os.makedirs(tmp_path, exist_ok=True)
