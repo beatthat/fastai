@@ -11,11 +11,12 @@ docker run \
   --name ${NAME} \
   -it \
   --rm \
+  --shm-size 16G \
   --runtime=nvidia \
   -p 8888:8888 \
   --mount type=bind,src=${HOST_MOUNT},target=/notebooks/docker_host \
   --workdir /notebooks \
-  fastai:1.0 
+  fastai:1.0
 
 
 # docker exec -it ${NAME} bash
