@@ -45,6 +45,9 @@ def num_cpus()->int:
     try:                   return len(os.sched_getaffinity(0))
     except AttributeError: return os.cpu_count()
 
+_default_cpus = min(16, num_cpus())
+defaults = SimpleNamespace(cpus=_default_cpus)
+
 def is_listy(x:Any)->bool: return isinstance(x, (tuple,list))
 def is_tuple(x:Any)->bool: return isinstance(x, tuple)
 def noop(x): return x
@@ -209,7 +212,7 @@ def func_args(func)->bool:
 
 def has_arg(func, arg)->bool: return arg in func_args(func)
 
-def split_kwargs(kwargs, func):
+def split_kwargs_by_func(kwargs, func):
     "Split `kwargs` between those expected by `func` and the others."
     args = func_args(func)
     func_kwargs = {a:kwargs.pop(a) for a in args if a in kwargs}
@@ -222,7 +225,8 @@ def try_int(o:Any)->Any:
 
 def array(a, *args, **kwargs)->np.ndarray:
     "Same as `np.array` but also handles generators"
-    if not isinstance(a, collections.Sized): a = list(a)
+    if not isinstance(a, collections.Sized) and not getattr(a,'__array_interface__',False):
+        a = list(a)
     return np.array(a, *args, **kwargs)
 
 class Category(ItemBase):
@@ -233,18 +237,6 @@ class Category(ItemBase):
 class MultiCategory(ItemBase):
     def __init__(self,data,obj,raw): self.data,self.obj,self.raw = data,obj,raw
     def __str__(self): return ';'.join([str(o) for o in self.obj])
-
-    @property
-    def p(self):
-        if self.p_ is None: self.p_ = Path(self.d)
-        return self.p_
-
-    def __getattr__(self,k):
-        res = getattr(self.d, k, None)
-        if res is not None: return res
-        return getattr(self.p, k)
-
-    #def read(self): return self.open('rb').read()
 
 def _treat_html(o:str)->str:
     return o.replace('\n','\\n')
@@ -257,3 +249,13 @@ def text2html_table(items:Collection[Collection[str]], widths:Collection[int])->
         html_code += "\n".join([f"    <th>{_treat_html(o)}</th>" for o in line if len(o) >= 1])
         html_code += "\n  </tr>\n"
     return html_code + "</table>\n"
+
+def parallel(func, arr:Collection, max_workers:int=None):
+    "Call `func` on every element of `arr` in parallel using `max_workers`"
+    max_workers = ifnone(max_workers, defaults.cpus)
+    if max_workers<2: _ = [func(o) for o in arr]
+    else:
+        with ProcessPoolExecutor(max_workers=max_workers) as ex:
+            futures = [ex.submit(func,o) for o in arr]
+            for f in progress_bar(concurrent.futures.as_completed(futures), total=len(arr)): pass
+
