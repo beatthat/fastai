@@ -35,7 +35,7 @@ class PreProcessor():
     def process(self, ds:Collection):        ds.items = array([self.process_one(item) for item in ds.items])
 
 class ItemList():
-    _bunch,_processor,_label_cls = DataBunch,None,None
+    _bunch,_processor,_label_cls,_square_show = DataBunch,None,None,False
 
     "A collection of items with `__len__` and `__getitem__` with `ndarray` indexing semantics."
     def __init__(self, items:Iterator, path:PathOrStr='.',
@@ -123,8 +123,9 @@ class ItemList():
             return True
         return self.filter_by_func(_inner)
 
-    def filter_by_rand(self, p:float):
+    def filter_by_rand(self, p:float, seed:int=None):
         "Keep random sample of `items` with probability `p`"
+        if seed is not None: np.random.seed(seed)
         return self.filter_by_func(lambda o: rand_bool(p))
 
     def split_by_list(self, train, valid):
@@ -203,6 +204,10 @@ class ItemList():
         "Label every item with `const`."
         return self.label_from_func(func=lambda o: const, **kwargs)
 
+    def label_empty(self):
+        "Label every item with an `EmptyLabel`."
+        return self.label_from_func(func=lambda o: 0., label_cls=EmptyLabelList)
+
     def label_from_func(self, func:Callable, **kwargs)->'LabelList':
         "Apply `func` to every input to get its label."
         return self.label_from_list([func(o) for o in self.items], **kwargs)
@@ -221,6 +226,12 @@ class ItemList():
             return res.group(1)
         return self.label_from_func(_inner, **kwargs)
 
+class EmptyLabelList(ItemList):
+    def get(self, i): return EmptyLabel()
+    def reconstruct(self, t:Tensor, x:Tensor=None):
+        if len(t.size()) == 0: return EmptyLabel()
+        return self.x.reconstruct(t,x) if has_arg(self.x.reconstruct, 'x') else self.x.reconstruct(t)
+
 class CategoryProcessor(PreProcessor):
     def __init__(self, ds:ItemList): self.create_classes(ds.classes)
 
@@ -228,7 +239,10 @@ class CategoryProcessor(PreProcessor):
         self.classes = classes
         if classes is not None: self.c2i = {v:k for k,v in enumerate(classes)}
 
-    def generate_classes(self, items): return uniqueify(items)
+    def generate_classes(self, items):
+        "Generate classes from `items` by taking the sorted unique values."
+        return uniqueify(items)
+
     def process_one(self,item): return self.c2i.get(item,None)
 
     def process(self, ds):
@@ -252,7 +266,6 @@ class CategoryListBase(ItemList):
         return super().new(items, classes=ifnone(classes, self.classes), **kwargs)
 
 class CategoryList(CategoryListBase):
-    _item_cls=Category
     _processor=CategoryProcessor
     def __init__(self, items:Iterator, classes:Collection=None, **kwargs):
         super().__init__(items, classes=classes, **kwargs)
@@ -261,23 +274,25 @@ class CategoryList(CategoryListBase):
     def get(self, i):
         o = self.items[i]
         if o is None: return None
-        return self._item_cls(o, self.classes[o])
+        return Category(o, self.classes[o])
 
     def analyze_pred(self, pred, thresh:float=0.5): return pred.argmax()
 
     def reconstruct(self, t):
-        return self._item_cls(t, self.classes[t])
+        return Category(t, self.classes[t])
 
 class MultiCategoryProcessor(CategoryProcessor):
     def process_one(self,item): return [self.c2i.get(o,None) for o in item]
 
     def generate_classes(self, items):
+        "Generate classes from `items` by taking the sorted unique values."
         classes = set()
         for c in items: classes = classes.union(set(c))
-        return list(classes)
+        classes = list(classes)
+        classes.sort()
+        return classes
 
 class MultiCategoryList(CategoryListBase):
-    _item_cls=MultiCategory
     _processor=MultiCategoryProcessor
     def __init__(self, items:Iterator, classes:Collection=None, sep:str=None, **kwargs):
         if sep is not None: items = array(csv.reader(items.astype(str), delimiter=sep))
@@ -287,14 +302,14 @@ class MultiCategoryList(CategoryListBase):
     def get(self, i):
         o = self.items[i]
         if o is None: return None
-        return self._item_cls(one_hot(o, self.c), [self.classes[p] for p in o], o)
+        return MultiCategory(one_hot(o, self.c), [self.classes[p] for p in o], o)
 
     def analyze_pred(self, pred, thresh:float=0.5):
         return (pred >= thresh).float()
 
     def reconstruct(self, t):
         o = [i for i in range(self.c) if t[i] == 1.]
-        return self._item_cls(t, [self.classes[p] for p in o], o)
+        return MultiCategory(t, [self.classes[p] for p in o], o)
 
 class FloatList(ItemList):
     def __init__(self, items:Iterator, log:bool=False, **kwargs):
@@ -309,6 +324,8 @@ class FloatList(ItemList):
     def get(self, i):
         o = super().get(i)
         return FloatItem(log(o) if self.log else o)
+
+    def reconstruct(self,t): return FloatItem(t.item())
 
 class ItemLists():
     "A `ItemList` for each of `train` and `valid` (optional `test`)"
@@ -349,7 +366,7 @@ class ItemLists():
         return self
 
     def transform(self, tfms:Optional[Tuple[TfmList,TfmList]]=(None,None), **kwargs):
-        "Set `tfms` to be applied to the train and validation set."
+        "Set `tfms` to be applied to the xs of the train and validation set."
         if not tfms: return self
         self.train.transform(tfms[0], **kwargs)
         self.valid.transform(tfms[1], **kwargs)
@@ -357,6 +374,7 @@ class ItemLists():
         return self
 
     def transform_y(self, tfms:Optional[Tuple[TfmList,TfmList]]=(None,None), **kwargs):
+        "Set `tfms` to be applied to the ys of the train and validation set."
         if not tfms: tfms=(None,None)
         self.train.transform_y(tfms[0], **kwargs)
         self.valid.transform_y(tfms[1], **kwargs)
@@ -429,14 +447,14 @@ class LabelList(Dataset):
             else:                 x,y = self.item   ,0
             if self.tfms:
                 x = x.apply_tfms(self.tfms, **self.tfmargs)
-            if self.tfm_y and self.item is None:
+            if hasattr(self, 'tfms_y') and self.tfm_y and self.item is None:
                 y = y.apply_tfms(self.tfms_y, **{**self.tfmargs_y, 'do_resolve':False})
             return x,y
         else: return self.new(self.x[idxs], self.y[idxs])
 
     def to_df(self)->None:
         "Create `pd.DataFrame` containing `items` from `self.x` and `self.y`"
-        return pd.DataFrame(dict(x=self.x._relative_item_paths(), y=self.y._relative_item_paths()))
+        return pd.DataFrame(dict(x=self.x._relative_item_paths(), y=[str(o) for o in self.y]))
 
     def to_csv(self, dest:str)->None:
         "Save `self.to_df()` to a CSV file in `self.path`/`dest`"
@@ -479,6 +497,7 @@ class LabelList(Dataset):
         return self
 
     def transform_y(self, tfms:TfmList=None, **kwargs):
+        "Set `tfms` to be applied to the targets only."
         self.tfm_y=True
         if tfms is None: self.tfms_y,self.tfmargs_y = self.tfms,{**self.tfmargs, **kwargs}
         else:            self.tfms_y,self.tfmargs_y = tfms,kwargs
@@ -486,7 +505,7 @@ class LabelList(Dataset):
 
 @classmethod
 def _databunch_load_empty(cls, path, fname:str='export.pkl', tfms:TfmList=None, tfm_y:bool=False, **kwargs):
-    ds = LabelList.load_empty(path/fname, tfms=tfms, tfm_y=tfm_y, **kwargs)
+    ds = LabelList.load_empty(path/fname, tfms=(None if tfms is None else tfms[1]), tfm_y=tfm_y, **kwargs)
     return cls.create(ds,ds,path=path)
 
 DataBunch.load_empty = _databunch_load_empty

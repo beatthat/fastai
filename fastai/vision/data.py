@@ -9,9 +9,9 @@ from .learner import *
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 __all__ = ['get_image_files', 'denormalize', 'get_annotations', 'ImageDataBunch',
-           'ImageItemList', 'normalize', 'normalize_funcs',
+           'ImageItemList', 'normalize', 'normalize_funcs', 'resize_to',
            'channel_view', 'mnist_stats', 'cifar_stats', 'imagenet_stats', 'download_images',
-           'verify_images', 'bb_pad_collate', 'ObjectCategoryProcessor', 'ImageToImageList',
+           'verify_images', 'bb_pad_collate', 'ImageImageList',
            'ObjectCategoryList', 'ObjectItemList', 'SegmentationLabelList', 'SegmentationItemList', 'PointsItemList']
 
 image_extensions = set(k for k,v in mimetypes.types_map.items() if v.startswith('image/'))
@@ -67,7 +67,7 @@ def normalize(x:TensorImage, mean:FloatTensor,std:FloatTensor)->TensorImage:
 
 def denormalize(x:TensorImage, mean:FloatTensor,std:FloatTensor)->TensorImage:
     "Denormalize `x` with `mean` and `std`."
-    return x*std[...,None,None] + mean[...,None,None]
+    return x.cpu()*std[...,None,None] + mean[...,None,None]
 
 def _normalize_batch(b:Tuple[Tensor,Tensor], mean:FloatTensor, std:FloatTensor, do_y:bool=False)->Tuple[Tensor,Tensor]:
     "`b` = `x`,`y` - normalize `x` array of imgs and `do_y` optionally `y`."
@@ -152,7 +152,7 @@ class ImageDataBunch(DataBunch):
     def batch_stats(self, funcs:Collection[Callable]=None)->Tensor:
         "Grab a batch of data and call reduction function `func` per channel"
         funcs = ifnone(funcs, [torch.mean,torch.std])
-        x = self.valid_dl.one_batch()[0].cpu()
+        x = self.one_batch(ds_type=DatasetType.Valid, denorm=False)[0].cpu()
         return [func(channel_view(x), 1) for func in funcs]
 
     def normalize(self, stats:Collection[Tensor]=None, do_y:bool=None)->None:
@@ -168,24 +168,26 @@ def download_image(url,dest, timeout=4):
     try: r = download_url(url, dest, overwrite=True, show_progress=False, timeout=timeout)
     except Exception as e: print(f"Error {url} {e}")
 
+def _download_image_inner(dest, url, i, timeout=4):
+    suffix = re.findall(r'\.\w+?(?=(?:\?|$))', url)
+    suffix = suffix[0] if len(suffix)>0  else '.jpg'
+    download_image(url, dest/f"{i:08d}{suffix}", timeout=timeout)
+
 def download_images(urls:Collection[str], dest:PathOrStr, max_pics:int=1000, max_workers:int=8, timeout=4):
     "Download images listed in text file `urls` to path `dest`, at most `max_pics`"
     urls = open(urls).read().strip().split("\n")[:max_pics]
     dest = Path(dest)
     dest.mkdir(exist_ok=True)
+    parallel(partial(_download_image_inner, dest, timeout=timeout), urls, max_workers=max_workers)
 
-    if max_workers:
-        with ProcessPoolExecutor(max_workers=max_workers) as ex:
-            suffixes = [re.findall(r'\.\w+?(?=(?:\?|$))', url) for url in urls]
-            suffixes = [suffix[0] if len(suffix)>0  else '.jpg' for suffix in suffixes]
-            futures = [ex.submit(download_image, url, dest/f"{i:08d}{suffixes[i]}", timeout=timeout)
-                       for i,url in enumerate(urls)]
-            for f in progress_bar(as_completed(futures), total=len(urls)): pass
-    else:
-        for i,url in enumerate(progress_bar(urls)):
-            download_image(url, dest/f"{i:08d}.jpg", timeout=timeout)
+def resize_to(img, targ_sz:int, use_min:bool=False):
+    "Size to resize to, to hit `targ_sz` at same aspect ratio, in PIL coords (i.e w*h)"
+    w,h = img.size
+    min_sz = (min if use_min else max)(w,h)
+    ratio = targ_sz/min_sz
+    return int(w*ratio),int(h*ratio)
 
-def verify_image(file:Path, delete:bool, max_size:Union[int,Tuple[int,int]]=None, dest:Path=None, n_channels:int=3,
+def verify_image(file:Path, idx:int, delete:bool, max_size:Union[int,Tuple[int,int]]=None, dest:Path=None, n_channels:int=3,
                  interp=PIL.Image.BILINEAR, ext:str=None, img_format:str=None, resume:bool=False, **kwargs):
     """Check if the image in `file` exists, it can be opened and has `n_channels`.
     If `delete=True`:
@@ -199,7 +201,6 @@ def verify_image(file:Path, delete:bool, max_size:Union[int,Tuple[int,int]]=None
         with warnings.catch_warnings():
             warnings.filterwarnings('error')
             try:
-                # must use this workaround to avoid: ResourceWarning: unclosed file warning
                 with open(file, 'rb') as img_file: PIL.Image.open(img_file)
             except Warning as w:
                 if "Possibly corrupt EXIF data" in str(w):
@@ -213,18 +214,14 @@ def verify_image(file:Path, delete:bool, max_size:Union[int,Tuple[int,int]]=None
                 else: warnings.warn(w)
 
         img = PIL.Image.open(file)
-        if max_size is None: return
-        assert isinstance(dest, Path), "You should provide `dest` Path to save resized image"
-        max_size = listify(max_size, 2)
-        if img.height > max_size[0] or img.width > max_size[1]:
+        if max_size is not None and (img.height > max_size or img.width > max_size):
+            assert isinstance(dest, Path), "You should provide `dest` Path to save resized image"
             dest_fname = dest/file.name
             if ext is not None: dest_fname=dest_fname.with_suffix(ext)
             if resume and os.path.isfile(dest_fname): return
-            ratio = img.height/img.width
-            new_h = min(max_size[0], int(max_size[1] * ratio))
-            new_w = int(new_h/ratio)
+            new_sz = resize_to(img, max_size)
             if n_channels == 3: img = img.convert("RGB")
-            img = img.resize((new_w,new_h), resample=interp)
+            img = img.resize(new_sz, resample=interp)
             img.save(dest_fname, img_format, **kwargs)
         img = np.array(img)
         img_channels = 1 if len(img.shape) == 2 else img.shape[2]
@@ -233,7 +230,7 @@ def verify_image(file:Path, delete:bool, max_size:Union[int,Tuple[int,int]]=None
         print(f'{e}')
         if delete: file.unlink()
 
-def verify_images(path:PathOrStr, delete:bool=True, max_workers:int=4, max_size:Union[int,Tuple[int,int]]=None,
+def verify_images(path:PathOrStr, delete:bool=True, max_workers:int=4, max_size:Union[int]=None,
                   dest:PathOrStr='.', n_channels:int=3, interp=PIL.Image.BILINEAR, ext:str=None, img_format:str=None,
                   resume:bool=None, **kwargs):
     """Check if the image in `path` exists, can be opened and has `n_channels`.
@@ -252,7 +249,7 @@ def verify_images(path:PathOrStr, delete:bool=True, max_workers:int=4, max_size:
     parallel(func, files, max_workers=max_workers)
 
 class ImageItemList(ItemList):
-    _bunch = ImageDataBunch
+    _bunch,_square_show = ImageDataBunch,True
     def __post_init__(self):
         super().__post_init__()
         self.sizes={}
@@ -286,7 +283,25 @@ class ImageItemList(ItemList):
         df = pd.read_csv(path/csv_name, header=header)
         return cls.from_df(df, path=path, **kwargs)
 
-    def reconstruct(self, t:Tensor): return Image(t)
+    def reconstruct(self, t:Tensor): return Image(t.clamp(min=0,max=1))
+    
+    def show_xys(self, xs, ys, figsize:Tuple[int,int]=(9,10), **kwargs):
+        "Show the `xs` and `ys` on a figure of `figsize`. `kwargs` are passed to the show method."
+        rows = int(math.sqrt(len(xs)))
+        fig, axs = plt.subplots(rows,rows,figsize=figsize)
+        for i, ax in enumerate(axs.flatten() if rows > 1 else [axs]):
+            xs[i].show(ax=ax, y=ys[i], **kwargs)
+        plt.tight_layout()
+
+    def show_xyzs(self, xs, ys, zs, figsize:Tuple[int,int]=None, **kwargs):
+        """Show `xs` (inputs), `ys` (targets) and `zs` (predictions) on a figure of `figsize`.
+        `kwargs` are passed to the show method."""
+        figsize = ifnone(figsize, (6,3*len(xs)))
+        fig,axs = plt.subplots(len(xs), 2, figsize=figsize)
+        fig.suptitle('Ground truth / Predictions', weight='bold', size=14)
+        for i,(x,y,z) in enumerate(zip(xs,ys,zs)):
+            x.show(ax=axs[i,0], y=y, **kwargs)
+            x.show(ax=axs[i,1], y=z, **kwargs)
 
 class ObjectCategoryProcessor(MultiCategoryProcessor):
     def __init__(self, ds:ItemList, pad_idx:int=0):
@@ -362,5 +377,26 @@ class PointsItemList(ItemList):
     def analyze_pred(self, pred, thresh:float=0.5): return pred.view(-1,2)
     def reconstruct(self, t, x): return ImagePoints(FlowField(x.size, t), scale=False)
 
-class ImageToImageList(ImageItemList): _label_cls = ImageItemList
+class ImageImageList(ImageItemList): 
+    _label_cls = ImageItemList
+    _square_show=False
+    
+    def show_xys(self, xs, ys, figsize:Tuple[int,int]=None, **kwargs):
+        "Show the `xs` and `ys` on a figure of `figsize`. `kwargs` are passed to the show method."
+        figsize = ifnone(figsize, (6,3*len(xs)))
+        fig, axs = plt.subplots(len(xs),2,figsize=figsize)
+        for i, (x,y) in enumerate(zip(xs,ys)):
+            x.show(ax=axs[i,0], **kwargs)
+            y.show(ax=axs[i,1], **kwargs)
+        plt.tight_layout()
 
+    def show_xyzs(self, xs, ys, zs, figsize:Tuple[int,int]=None, **kwargs):
+        """Show `xs` (inputs), `ys` (targets) and `zs` (predictions) on a figure of `figsize`.
+        `kwargs` are passed to the show method."""
+        figsize = ifnone(figsize, (9,3*len(xs)))
+        fig,axs = plt.subplots(len(xs), 3, figsize=figsize)
+        fig.suptitle('Input / Prediction / Target', weight='bold', size=14)
+        for i,(x,y,z) in enumerate(zip(xs,ys,zs)):
+            x.show(ax=axs[i,0], **kwargs)
+            y.show(ax=axs[i,2], **kwargs)
+            z.show(ax=axs[i,1], **kwargs)

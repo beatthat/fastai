@@ -3,7 +3,7 @@ from .basic_data import *
 from .torch_core import *
 
 __all__ = ['AverageMetric', 'Callback', 'CallbackHandler', 'OptimWrapper', 'SmoothenValue', 'Stepper', 'annealing_cos', 'CallbackList',
-           'annealing_exp', 'annealing_linear', 'annealing_no', 'annealing_poly', 'do_annealing_poly']
+           'annealing_exp', 'annealing_linear', 'annealing_no', 'annealing_poly']
 
 class OptimWrapper():
     "Basic wrapper around an optimizer to simplify HP changes."
@@ -21,8 +21,15 @@ class OptimWrapper():
         split_groups = split_bn_bias(layer_groups)
         opt = opt_func([{'params': trainable_params(l), 'lr':0} for l in split_groups])
         opt = cls(opt, **kwargs)
-        opt.lr = listify(lr, layer_groups)
+        opt.lr,opt.opt_func = listify(lr, layer_groups),opt_func
         return opt
+    
+    def new(self, layer_groups:ModuleList):
+        "Create a new `OptimWrapper` from `self` with another `layer_groups` but the same hyper-parameters."
+        opt_func = getattr(self, 'opt_func', self.opt.__class__)
+        split_groups = split_bn_bias(layer_groups)
+        opt = opt_func([{'params': trainable_params(l), 'lr':0} for l in split_groups])
+        return self.create(opt_func, self.lr, layer_groups, wd=self.wd, true_wd=self.true_wd, bn_wd=self.bn_wd)
 
     def __repr__(self)->str:
         return f'OptimWrapper over {repr(self.opt)}.\nTrue weight decay: {self.true_wd}'

@@ -28,7 +28,7 @@ def dice(input:Tensor, targs:Tensor, iou:bool=False)->Rank0Tensor:
     targs = targs.view(n,-1)
     intersect = (input*targs).sum().float()
     union = (input+targs).sum().float()
-    if not iou: return 2. * intersect / union
+    if not iou: return (2. * intersect / union if union > 0 else union.new([1.]).squeeze())
     else: return intersect / (union-intersect+1.0)
 
 def accuracy(input:Tensor, targs:Tensor)->Rank0Tensor:
@@ -44,6 +44,7 @@ def error_rate(input:Tensor, targs:Tensor)->Rank0Tensor:
 
 def exp_rmspe(pred:Tensor, targ:Tensor)->Rank0Tensor:
     "Exp RMSE between `pred` and `targ`."
+    if len(pred.shape)==2: pred=pred.squeeze(1)
     pred, targ = torch.exp(pred), torch.exp(targ)
     pct_var = (targ - pred)/targ
     return torch.sqrt((pct_var**2).mean())

@@ -67,7 +67,9 @@ def is1d(a:Collection)->bool:
 
 def uniqueify(x:Series)->List:
     "Return unique values of `x`"
-    return list(OrderedDict.fromkeys(x).keys())
+    res = list(OrderedDict.fromkeys(x).keys())
+    res.sort()
+    return res
 
 def idx_dict(a): return {v:k for k,v in enumerate(a)}
 
@@ -143,6 +145,7 @@ class ItemBase():
     def apply_tfms(self, tfms:Collection, **kwargs):
         if tfms: raise Exception('Not implemented')
         return self
+
 def download_url(url:str, dest:str, overwrite:bool=False, pbar:ProgressBar=None,
                  show_progress=True, chunk_size=1024*1024, timeout=4)->None:
     "Download `url` to `dest` unless it exists and not `overwrite`."
@@ -229,6 +232,10 @@ def array(a, *args, **kwargs)->np.ndarray:
         a = list(a)
     return np.array(a, *args, **kwargs)
 
+class EmptyLabel(ItemBase):
+    def __init__(self): self.obj,self.data = 0.,0.
+    def __str__(self):  return ''
+
 class Category(ItemBase):
     def __init__(self,data,obj): self.data,self.obj = data,obj
     def __int__(self): return int(self.data)
@@ -242,6 +249,7 @@ def _treat_html(o:str)->str:
     return o.replace('\n','\\n')
 
 def text2html_table(items:Collection[Collection[str]], widths:Collection[int])->str:
+    "Put the texts in `items` in an HTML table, `widths` are the widths of the columns in %."
     html_code = f"<table>"
     for w in widths: html_code += f"  <col width='{w}%'>"
     for line in items:
@@ -253,9 +261,9 @@ def text2html_table(items:Collection[Collection[str]], widths:Collection[int])->
 def parallel(func, arr:Collection, max_workers:int=None):
     "Call `func` on every element of `arr` in parallel using `max_workers`"
     max_workers = ifnone(max_workers, defaults.cpus)
-    if max_workers<2: _ = [func(o) for o in arr]
+    if max_workers<2: _ = [func(o,i) for i,o in enumerate(arr)]
     else:
         with ProcessPoolExecutor(max_workers=max_workers) as ex:
-            futures = [ex.submit(func,o) for o in arr]
+            futures = [ex.submit(func,o,i) for i,o in enumerate(arr)]
             for f in progress_bar(concurrent.futures.as_completed(futures), total=len(arr)): pass
 

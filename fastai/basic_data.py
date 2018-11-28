@@ -44,20 +44,11 @@ class DeviceDataLoader():
 
     def __iter__(self):
         "Process and returns items from `DataLoader`."
+        assert not self.skip_size1 or self.batch_size > 1, "Batch size cannot be one if skip_size1 is set to True"
         for b in self.dl:
             y = b[1][0] if is_listy(b[1]) else b[1]
             if not self.skip_size1 or y.size(0) != 1: yield self.proc_batch(b)
-
-    def one_batch(self, detach:bool=False)->Collection[Tensor]:
-        "Get one batch from the data loader."
-        w = self.num_workers
-        self.num_workers = 0
-        it = iter(self)
-        try:     x,y = next(it)
-        finally: self.num_workers = w
-        if detach: x,y = x.detach(),y.detach()
-        return x,y
-
+                
     @classmethod
     def create(cls, dataset:Dataset, bs:int=64, shuffle:bool=False, device:torch.device=defaults.device,
                tfms:Collection[Callable]=tfms, num_workers:int=defaults.cpus, collate_fn:Callable=data_collate, **kwargs:Any):
@@ -67,7 +58,6 @@ class DeviceDataLoader():
 
 class DataBunch():
     _batch_first=True
-    _square_show=False
 
     "Bind `train_dl`,`valid_dl` and`test_dl` to `device`. tfms are DL tfms (normalize). `path` is for models."
     def __init__(self, train_dl:DataLoader, valid_dl:DataLoader, test_dl:Optional[DataLoader]=None,
@@ -117,18 +107,38 @@ class DataBunch():
     def add_tfm(self,tfm:Callable)->None:
         for dl in self.dls: dl.add_tfm(tfm)
 
+    def one_batch(self, ds_type:DatasetType=DatasetType.Train, detach:bool=True, denorm:bool=True)->Collection[Tensor]:
+        "Get one batch from the data loader of `ds_type`. Optionally `detach` and `denorm`."
+        dl = self.dl(ds_type)
+        w = self.num_workers
+        self.num_workers = 0
+        try:     x,y = next(iter(dl))
+        finally: self.num_workers = w
+        if detach: x,y = to_detach(x),to_detach(y)
+        norm = getattr(self,'norm',False)
+        if denorm and norm:
+            x = self.denorm(x)
+            if norm.keywords.get('do_y',False): y = self.denorm(y)
+        return x,y
+
+    def one_item(self, item, detach:bool=False, denorm:bool=False):
+        "Get ìtem` into a batch. Optionally `detach` and `denorm`."
+        ds = self.single_ds
+        ds.set_item(item)
+        res = self.one_batch(ds_type=DatasetType.Single, detach=detach, denorm=denorm)
+        ds.clear_item()
+        return res
+
     def show_batch(self, rows:int=5, ds_type:DatasetType=DatasetType.Train, **kwargs)->None:
         "Show a batch of data in `ds_type` on a few `rows`."
-        dl = self.dl(ds_type)
-        x,y = next(iter(dl))
-        if getattr(self,'norm',False): x = self.denorm(x.cpu())
-        if self._square_show: rows = rows ** 2
+        x,y = self.one_batch(ds_type, True, True)
+        if self.train_ds.x._square_show: rows = rows ** 2
         xs = [self.train_ds.x.reconstruct(grab_idx(x, i, self._batch_first)) for i in range(rows)]
         #TODO: get rid of has_arg if possible
         if has_arg(self.train_ds.y.reconstruct, 'x'):
             ys = [self.train_ds.y.reconstruct(grab_idx(y, i), x=x) for i,x in enumerate(xs)]
         else : ys = [self.train_ds.y.reconstruct(grab_idx(y, i)) for i in range(rows)]
-        dl.dataset[0][0].show_xys(xs, ys, **kwargs)
+        self.train_ds.x.show_xys(xs, ys, **kwargs)
 
     def export(self, fname:str='export.pkl'):
         self.valid_ds.export(self.path/fname)
@@ -137,6 +147,10 @@ class DataBunch():
     def train_ds(self)->Dataset: return self.train_dl.dl.dataset
     @property
     def valid_ds(self)->Dataset: return self.valid_dl.dl.dataset
+    @property
+    def test_ds(self)->Dataset: return self.test_dl.dl.dataset
+    @property
+    def single_ds(self)->Dataset: return self.single_dl.dl.dataset
     @property
     def loss_func(self)->Dataset: return getattr(self.train_ds, 'loss_func', F.nll_loss)
 

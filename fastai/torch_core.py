@@ -71,10 +71,10 @@ def np_address(x:np.ndarray)->int:
     "Address of `x` in memory"
     return x.__array_interface__['data'][0]
 
-def to_detach(b:Tensors):
-    "Recursively detach lists of tensors in `b `"
-    if is_listy(b): return [to_detach(o) for o in b]
-    return b.detach() if isinstance(b,Tensor) else b
+def to_detach(b:Tensors, cpu:bool=True):
+    "Recursively detach lists of tensors in `b `, puts them on the CPU if `cpu=True`."
+    if is_listy(b): return [to_detach(o, cpu) for o in b]
+    return (b.detach().cpu() if cpu else b.detach()) if isinstance(b,Tensor) else b
 
 def to_data(b:ItemsList):
     "Recursively map lists of items in `b ` to their wrapped data."
@@ -179,11 +179,15 @@ def model2half(model:nn.Module)->nn.Module:
     "Convert `model` to half precision except the batchnorm layers."
     return bn2float(model.half())
 
+def init_default(m:nn.Module, func:LayerFunc=nn.init.kaiming_normal_)->None:
+    if func:
+        if hasattr(m, 'weight'): func(m.weight)
+        if hasattr(m, 'bias') and hasattr(m.bias, 'data'): m.bias.data.fill_(0.)
+    return m
+
 def cond_init(m:nn.Module, init_func:LayerFunc):
     "Initialize the non-batchnorm layers of `m` with `init_func`"
-    if (not isinstance(m, bn_types)) and requires_grad(m):
-        if hasattr(m, 'weight'): init_func(m.weight)
-        if hasattr(m, 'bias') and hasattr(m.bias, 'data'): m.bias.data.fill_(0.)
+    if (not isinstance(m, bn_types)) and requires_grad(m): init_default(m, init_func)
 
 def apply_leaf(m:nn.Module, f:LayerFunc):
     "Apply `f` to children of `m`."
@@ -245,7 +249,6 @@ Tensor.ndim = property(lambda x: len(x.shape))
 class FloatItem(ItemBase):
     def __init__(self,obj): self.data,self.obj = tensor(obj),obj
     def __str__(self): return str(self.obj)
-    def reconstruct(self,t): return self(t.item())
 
 def grab_idx(x,i,batch_first:bool=True):
     if batch_first: return ([o[i].cpu() for o in x]   if is_listy(x) else x[i].cpu())
